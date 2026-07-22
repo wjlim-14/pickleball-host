@@ -5,7 +5,7 @@ export default function Login({ searchParams }) {
       <div className="auth-card">
         <div className="brand">
           <span className="brand-dot" />
-          PicklePlay
+          QuickQueue
         </div>
         <p className="auth-sub">Host console — private beta</p>
         <form method="post" action="/api/login">

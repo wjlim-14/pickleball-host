@@ -93,9 +93,46 @@ export default function HostApp() {
   });
   const [, force] = useReducer((x) => x + 1, 0);
   const st = S.current;
-  const act = (fn) => { fn(); force(); };
+
+  // ---- local browser persistence (stopgap until Supabase) ----
+  const STORAGE_KEY = "qq_state_v1";
+  function save() {
+    try {
+      const courts = st.courts.map((ct) => ({
+        name: ct.name,
+        cur: ct.cur ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((p) => p.id)) } : null,
+        standby: ct.standby ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((p) => p.id)) } : null,
+      }));
+      const data = { players: st.players, courts, log: st.log, session: st.session, id: st.id, sid: st.sid, prefs: { idleFlag: st.ui.idleFlag, sound: st.ui.sound } };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  }
+  const act = (fn) => { fn(); save(); force(); };
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const d = JSON.parse(raw);
+        const map = {};
+        (d.players || []).forEach((p) => (map[p.id] = p));
+        const ok = (g) => g && g.teams.every((t) => t.every((id) => map[id]));
+        const courts = (d.courts || []).map((ct) => ({
+          name: ct.name,
+          cur: ok(ct.cur) ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((id) => map[id])) } : null,
+          standby: ok(ct.standby) ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((id) => map[id])) } : null,
+        }));
+        st.players = d.players || [];
+        st.courts = courts;
+        st.log = d.log || [];
+        st.session = d.session || st.session;
+        st.id = d.id || st.id;
+        st.sid = d.sid || st.sid;
+        if (d.prefs) { st.ui.idleFlag = d.prefs.idleFlag ?? 300; st.ui.sound = d.prefs.sound ?? true; }
+        st.ui.tab = st.session.status === "started" ? "match" : st.session.status === "created" ? "players" : "session";
+      }
+    } catch (e) {}
+    force();
     const t = setInterval(() => force(), 1000);
     return () => clearInterval(t);
   }, []);

@@ -1,7 +1,7 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "PicklePlay — Host Console",
+  title: "QuickQueue — Host Console",
   description: "Auto-arranging paddle queue for pickleball open play.",
 };
 

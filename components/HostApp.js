@@ -587,7 +587,7 @@ export default function HostApp() {
         <div className="card">
           <div className="section-title">Support</div>
           <a className="btn btn-full" href={bugReportUrl || "#"} target="_blank" rel="noreferrer">Report a bug</a>
-          <div className="hint" style={{ marginTop: 8 }}>PicklePlay · v0.1 beta</div>
+          <div className="hint" style={{ marginTop: 8 }}>QuickQueue · v0.1 beta</div>
         </div>
 
         <form method="post" action="/api/logout">

@@ -33,6 +33,7 @@ export async function middleware(request) {
   const isPublic =
     path.startsWith("/login") ||
     path.startsWith("/register") ||
+    path.startsWith("/reset") ||
     path.startsWith("/auth");
 
   if (!user && !isPublic) {

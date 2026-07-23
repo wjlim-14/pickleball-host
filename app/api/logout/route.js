@@ -1,7 +1,4 @@
-import { NextResponse } from "next/server";
-
-export async function POST(req) {
-  const res = NextResponse.redirect(new URL("/login", req.url), 303);
-  res.cookies.set("pp_auth", "", { path: "/", maxAge: 0 });
-  return res;
+// Deprecated: sign-out now uses supabase.auth.signOut() from the client.
+export async function POST() {
+  return new Response("Gone", { status: 410 });
 }

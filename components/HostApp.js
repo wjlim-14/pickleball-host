@@ -7,6 +7,7 @@ import {
   findChallengers,
   compat,
 } from "@/lib/engine";
+import { createClient } from "@/lib/supabase/client";
 import CreateSessionForm from "./CreateSessionForm";
 import CheckInForm from "./CheckInForm";
 
@@ -80,13 +81,13 @@ function Seg({ opts, val, onPick, styleFor }) {
   );
 }
 
-export default function HostApp() {
+export default function HostApp({ user }) {
   const bugReportUrl = process.env.NEXT_PUBLIC_BUGREPORT_URL || "";
   const S = useRef({
     players: [],
     courts: [],
     log: [],
-    session: { status: "none", name: "", date: "", time: "", location: "", method: "requeue", start: null },
+    session: { status: "none", dbId: null, name: "", date: "", time: "", location: "", method: "requeue", start: null },
     ui: { tab: "session", editId: null, swap: null, ending: false, exportText: null, idleFlag: 300, sound: true },
     id: 1,
     sid: 1,
@@ -94,47 +95,136 @@ export default function HostApp() {
   const [, force] = useReducer((x) => x + 1, 0);
   const st = S.current;
 
-  // ---- local browser persistence (stopgap until Supabase) ----
+  // ---- supabase client (browser) ----
+  const sb = useRef(null);
+  if (typeof window !== "undefined" && !sb.current) {
+    try { sb.current = createClient(); } catch (e) {}
+  }
+  const syncRef = useRef(null);
+
+  // ---- serialize / hydrate state ----
+  function serializeState() {
+    const courts = st.courts.map((ct) => ({
+      name: ct.name,
+      cur: ct.cur ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((p) => p.id)) } : null,
+      standby: ct.standby ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((p) => p.id)) } : null,
+    }));
+    return { players: st.players, courts, log: st.log, session: st.session, id: st.id, sid: st.sid, prefs: { idleFlag: st.ui.idleFlag, sound: st.ui.sound } };
+  }
+  function hydrate(d) {
+    const map = {};
+    (d.players || []).forEach((p) => (map[p.id] = p));
+    const ok = (g) => g && g.teams.every((t) => t.every((id) => map[id]));
+    const courts = (d.courts || []).map((ct) => ({
+      name: ct.name,
+      cur: ok(ct.cur) ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((id) => map[id])) } : null,
+      standby: ok(ct.standby) ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((id) => map[id])) } : null,
+    }));
+    st.players = d.players || [];
+    st.courts = courts;
+    st.log = d.log || [];
+    st.session = d.session || st.session;
+    st.id = d.id || st.id;
+    st.sid = d.sid || st.sid;
+    if (d.prefs) { st.ui.idleFlag = d.prefs.idleFlag ?? 300; st.ui.sound = d.prefs.sound ?? true; }
+    st.ui.tab = st.session.status === "started" ? "match" : st.session.status === "created" ? "players" : "session";
+  }
+
+  // ---- local cache ----
   const STORAGE_KEY = "qq_state_v1";
   function save() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeState())); } catch (e) {}
+  }
+
+  // ---- database sync ----
+  async function upsertSession() {
+    if (!sb.current || !st.session.dbId) return;
+    const se = st.session;
     try {
-      const courts = st.courts.map((ct) => ({
-        name: ct.name,
-        cur: ct.cur ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((p) => p.id)) } : null,
-        standby: ct.standby ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((p) => p.id)) } : null,
-      }));
-      const data = { players: st.players, courts, log: st.log, session: st.session, id: st.id, sid: st.sid, prefs: { idleFlag: st.ui.idleFlag, sound: st.ui.sound } };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      await sb.current.from("sessions").upsert({
+        id: se.dbId,
+        host_id: user.id,
+        name: se.name, date: se.date, time: se.time, location: se.location,
+        method: se.method,
+        courts: st.courts.map((c) => c.name),
+        state: serializeState(),
+        status: se.status,
+        games_count: st.log.length,
+        players_count: st.players.length,
+        started_at: se.start ? new Date(se.start).toISOString() : null,
+        updated_at: new Date().toISOString(),
+      });
     } catch (e) {}
   }
-  const act = (fn) => { fn(); save(); force(); };
-
-  useEffect(() => {
+  function queueDbSync() {
+    if (!sb.current || !st.session.dbId) return;
+    if (syncRef.current) clearTimeout(syncRef.current);
+    syncRef.current = setTimeout(() => { void upsertSession(); }, 1500);
+  }
+  function insertGameDb(ct, g, winnerSide) {
+    if (!sb.current || !st.session.dbId) return;
+    const team = (t) => t.map((p) => ({ name: p.name, level: p.level, gender: p.gender }));
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const d = JSON.parse(raw);
-        const map = {};
-        (d.players || []).forEach((p) => (map[p.id] = p));
-        const ok = (g) => g && g.teams.every((t) => t.every((id) => map[id]));
-        const courts = (d.courts || []).map((ct) => ({
-          name: ct.name,
-          cur: ok(ct.cur) ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((id) => map[id])) } : null,
-          standby: ok(ct.standby) ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((id) => map[id])) } : null,
-        }));
-        st.players = d.players || [];
-        st.courts = courts;
-        st.log = d.log || [];
-        st.session = d.session || st.session;
-        st.id = d.id || st.id;
-        st.sid = d.sid || st.sid;
-        if (d.prefs) { st.ui.idleFlag = d.prefs.idleFlag ?? 300; st.ui.sound = d.prefs.sound ?? true; }
-        st.ui.tab = st.session.status === "started" ? "match" : st.session.status === "created" ? "players" : "session";
+      void sb.current.from("games").insert({
+        session_id: st.session.dbId,
+        host_id: user.id,
+        court: ct.name,
+        format: TB[g.type].t,
+        team1: team(g.teams[0]),
+        team2: team(g.teams[1]),
+        winner: winnerSide == null ? null : g.teams[winnerSide].map((p) => p.name).join(" & "),
+        duration_seconds: Math.round((Date.now() - g.start) / 1000),
+      });
+    } catch (e) {}
+  }
+  function finalizeSession() {
+    if (!sb.current || !st.session.dbId) return;
+    const sid = st.session.dbId;
+    try {
+      void sb.current.from("sessions").update({
+        status: "ended", ended_at: new Date().toISOString(),
+        state: serializeState(), games_count: st.log.length, players_count: st.players.length,
+      }).eq("id", sid);
+      if (st.players.length) {
+        void sb.current.from("session_players").insert(st.players.map((p) => ({
+          session_id: sid, host_id: user.id, name: p.name, gender: p.gender, level: p.level, format_req: p.freq, games_played: p.games,
+        })));
       }
     } catch (e) {}
-    force();
+  }
+  async function signOut() {
+    try { if (sb.current) await sb.current.auth.signOut(); } catch (e) {}
+    window.location.href = "/login";
+  }
+
+  const act = (fn) => { fn(); save(); queueDbSync(); force(); };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let restored = false;
+      try {
+        if (sb.current) {
+          const { data } = await sb.current
+            .from("sessions")
+            .select("state")
+            .eq("host_id", user.id)
+            .neq("status", "ended")
+            .order("updated_at", { ascending: false })
+            .limit(1);
+          if (data && data[0] && data[0].state) { hydrate(data[0].state); restored = true; }
+        }
+      } catch (e) {}
+      if (!restored) {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) hydrate(JSON.parse(raw));
+        } catch (e) {}
+      }
+      if (!cancelled) force();
+    })();
     const t = setInterval(() => force(), 1000);
-    return () => clearInterval(t);
+    return () => { cancelled = true; clearInterval(t); };
   }, []);
 
   // ---- data helpers ----
@@ -205,6 +295,7 @@ export default function HostApp() {
       winner: winnerSide == null ? "" : g.teams[winnerSide].map((p) => p.name).join(" & "),
       secs: Math.round((Date.now() - g.start) / 1000),
     });
+    insertGameDb(ct, g, winnerSide);
   }
   function gameDone(i) {
     const ct = st.courts[i], g = ct.cur;
@@ -250,19 +341,22 @@ export default function HostApp() {
 
   // ---- session lifecycle ----
   function createSession(cfg) {
-    st.session = { status: "created", name: cfg.name, date: cfg.date, time: cfg.time, location: cfg.location, method: cfg.method, start: null };
+    const dbId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+    st.session = { status: "created", dbId, name: cfg.name, date: cfg.date, time: cfg.time, location: cfg.location, method: cfg.method, start: null };
     st.courts = cfg.courts.map((name) => ({ name, cur: null, standby: null }));
     st.players = []; st.log = []; st.id = 1; st.sid = 1;
     st.ui.tab = "players";
+    void upsertSession();
   }
   function startSession() {
     st.session.status = "started";
     st.session.start = Date.now();
     autofill();
     st.ui.tab = "match";
+    void upsertSession();
   }
   function resetSession() {
-    st.session = { status: "none", name: "", date: "", time: "", location: "", method: "requeue", start: null };
+    st.session = { status: "none", dbId: null, name: "", date: "", time: "", location: "", method: "requeue", start: null };
     st.courts = []; st.players = []; st.log = [];
     st.ui.exportText = null; st.ui.ending = false; st.ui.tab = "session";
   }
@@ -362,8 +456,8 @@ export default function HostApp() {
             {st.log.length} games recorded. Export the data before ending?
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => act(() => { st.ui.exportText = buildCSV(); st.ui.ending = false; })}>Export data and end</button>
-            <button className="btn" onClick={() => act(resetSession)}>End without export</button>
+            <button className="btn btn-primary" onClick={() => act(() => { finalizeSession(); st.ui.exportText = buildCSV(); st.ui.ending = false; })}>Export data and end</button>
+            <button className="btn" onClick={() => act(() => { finalizeSession(); resetSession(); })}>End without export</button>
             <button className="btn" onClick={() => act(() => { st.ui.ending = false; })}>Cancel</button>
           </div>
         </div>
@@ -602,6 +696,10 @@ export default function HostApp() {
         <div className="card">
           <div className="section-title">Account</div>
           <div className="row" style={{ border: "none", padding: "4px 0" }}>
+            <span className="muted grow">Signed in as</span>
+            <span style={{ fontSize: 13 }}>{user.email}</span>
+          </div>
+          <div className="row" style={{ border: "none", padding: "4px 0" }}>
             <span className="muted grow">Plan</span>
             <span className="pill" style={{ background: "#EEEDFE", color: "#3C3489" }}>Private beta</span>
           </div>
@@ -609,6 +707,9 @@ export default function HostApp() {
             <span className="muted grow">Credits</span>
             <span>Unlimited (beta)</span>
           </div>
+          {user.isAdmin && (
+            <a className="btn btn-full" href="/admin" style={{ marginTop: 8 }}>Admin — manage beta codes</a>
+          )}
         </div>
 
         <div className="card">
@@ -624,12 +725,10 @@ export default function HostApp() {
         <div className="card">
           <div className="section-title">Support</div>
           <a className="btn btn-full" href={bugReportUrl || "#"} target="_blank" rel="noreferrer">Report a bug</a>
-          <div className="hint" style={{ marginTop: 8 }}>QuickQueue · v0.1 beta</div>
+          <div className="hint" style={{ marginTop: 8 }}>QuickQueue · v0.2 beta</div>
         </div>
 
-        <form method="post" action="/api/logout">
-          <button className="btn btn-danger btn-full" type="submit">Sign out</button>
-        </form>
+        <button className="btn btn-danger btn-full" onClick={signOut}>Sign out</button>
       </div>
     );
   }

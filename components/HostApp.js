@@ -6,6 +6,8 @@ import {
   pickFour,
   findChallengers,
   compat,
+  deriveType,
+  teamAssign,
 } from "@/lib/engine";
 import { createClient } from "@/lib/supabase/client";
 import CreateSessionForm from "./CreateSessionForm";
@@ -112,6 +114,7 @@ export default function HostApp({ user }) {
       name: ct.name,
       cur: ct.cur ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((p) => p.id)) } : null,
       standby: ct.standby ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((p) => p.id)) } : null,
+      hold: (ct.hold || []).map((p) => p.id),
     }));
     return { players: st.players, courts, log: st.log, session: st.session, id: st.id, sid: st.sid, history: st.history, round: st.round, prefs: { idleFlag: st.ui.idleFlag, sound: st.ui.sound } };
   }
@@ -123,6 +126,7 @@ export default function HostApp({ user }) {
       name: ct.name,
       cur: ok(ct.cur) ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((id) => map[id])) } : null,
       standby: ok(ct.standby) ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((id) => map[id])) } : null,
+      hold: (ct.hold || []).map((id) => map[id]).filter(Boolean),
     }));
     st.players = d.players || [];
     st.courts = courts;
@@ -256,7 +260,7 @@ export default function HostApp({ user }) {
       stackId: null,
     });
     upsertRoster({ name, gender, level, freq });
-    if (st.session.status === "started") autofill();
+    if (st.session.status === "started") refill();
   }
   function upsertRoster({ name, gender, level, freq }) {
     const nm = (name || "").trim();
@@ -286,7 +290,7 @@ export default function HostApp({ user }) {
     const sid = st.sid++;
     p.stackId = sid; m.stackId = sid;
     p.qt = m.qt = Math.max(p.qt, m.qt);
-    if (st.session.status === "started") autofill();
+    if (st.session.status === "started") refill();
   }
   function unstack(pId) {
     const p = byId(pId);
@@ -294,7 +298,7 @@ export default function HostApp({ user }) {
     const m = st.players.find((q) => q.stackId === p.stackId && q.id !== p.id);
     p.stackId = null;
     if (m) m.stackId = null;
-    if (st.session.status === "started") autofill();
+    if (st.session.status === "started") refill();
   }
   function autofill() {
     if (st.session.status !== "started") return;
@@ -318,6 +322,82 @@ export default function HostApp({ user }) {
         virt = virt.filter((p) => r.four.indexOf(p) < 0);
       } else ct.standby = null;
     }
+  }
+  // ---- King of the Court (ladder) ----
+  function makeGame(four) {
+    const type = deriveType(four);
+    const ta = teamAssign(four, type, st.history, st.round);
+    return { teams: ta.teams, type, start: Date.now() };
+  }
+  function fillLadder() {
+    const N = st.courts.length;
+    if (!N) return;
+    st.courts.forEach((ct) => { ct.hold = (ct.hold || []).filter((p) => p.status === "wait" && st.players.includes(p)); });
+    const inLadder = new Set();
+    st.courts.forEach((ct) => {
+      ct.hold.forEach((p) => inLadder.add(p.id));
+      if (ct.cur) ct.cur.teams[0].concat(ct.cur.teams[1]).forEach((p) => inLadder.add(p.id));
+    });
+    waiting().forEach((p) => { if (!inLadder.has(p.id)) st.courts[N - 1].hold.push(p); });
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const ct of st.courts) {
+        if (!ct.cur && ct.hold.length >= 4) {
+          ct.hold.sort((a, b) => a.qt - b.qt);
+          const four = ct.hold.slice(0, 4);
+          ct.hold = ct.hold.slice(4);
+          four.forEach((p) => (p.status = "play"));
+          ct.cur = makeGame(four);
+          changed = true;
+        }
+      }
+    }
+    computeLadderStandby();
+  }
+  function computeLadderStandby() {
+    st.courts.forEach((ct) => {
+      const h = (ct.hold || []).slice().sort((a, b) => a.qt - b.qt);
+      if (h.length >= 4) {
+        const four = h.slice(0, 4);
+        ct.standby = { teams: [four.slice(0, 2), four.slice(2, 4)], type: deriveType(four) };
+      } else ct.standby = null;
+    });
+  }
+  function seedLadder() {
+    const N = st.courts.length;
+    st.courts.forEach((ct) => { ct.cur = null; ct.hold = []; });
+    st.players.forEach((p) => { if (p.status === "play") p.status = "wait"; });
+    const pool = waiting().slice().sort((a, b) => b.level - a.level || a.qt - b.qt);
+    let idx = 0;
+    for (let k = 0; k < N; k++) { const g = pool.slice(idx, idx + 4); st.courts[k].hold = g; idx += g.length; }
+    if (idx < pool.length) st.courts[N - 1].hold = st.courts[N - 1].hold.concat(pool.slice(idx));
+    fillLadder();
+  }
+  function ladderResolve(i, side) {
+    const ct = st.courts[i], g = ct.cur;
+    if (!g) return;
+    logGame(ct, g, side);
+    recordHistory(g);
+    const N = st.courts.length;
+    const win = g.teams[side], lose = g.teams[1 - side];
+    const up = Math.max(0, i - 1), down = Math.min(N - 1, i + 1);
+    ct.cur = null;
+    win.concat(lose).forEach((p) => { p.status = "wait"; p.qt = Date.now(); p.games++; });
+    if (!st.courts[up].hold) st.courts[up].hold = [];
+    if (!st.courts[down].hold) st.courts[down].hold = [];
+    win.forEach((p) => st.courts[up].hold.push(p));
+    lose.forEach((p) => st.courts[down].hold.push(p));
+    fillLadder();
+  }
+  function refill() {
+    if (st.session.status !== "started") return;
+    if (st.session.method === "ladder") fillLadder();
+    else autofill();
+  }
+  function winSelect(i, side) {
+    if (st.session.method === "ladder") ladderResolve(i, side);
+    else winners(i, side);
   }
   function logGame(ct, g, winnerSide) {
     if (st.session.status !== "started") return;
@@ -400,7 +480,7 @@ export default function HostApp({ user }) {
   function startSession() {
     st.session.status = "started";
     st.session.start = Date.now();
-    autofill();
+    if (st.session.method === "ladder") seedLadder(); else autofill();
     st.ui.tab = "match";
     void upsertSession();
   }
@@ -433,16 +513,16 @@ export default function HostApp({ user }) {
   }
 
   // ---- court config (session tab) ----
-  function addCourt() { st.courts.push({ name: "Court " + (st.courts.length + 1), cur: null, standby: null }); autofill(); }
+  function addCourt() { st.courts.push({ name: "Court " + (st.courts.length + 1), cur: null, standby: null }); refill(); }
   function removeCourt(i) {
     const ct = st.courts[i];
     if (ct.cur) ct.cur.teams[0].concat(ct.cur.teams[1]).forEach((p) => { p.status = "wait"; p.qt = Date.now(); });
-    st.courts.splice(i, 1); autofill();
+    st.courts.splice(i, 1); refill();
   }
   function removeEmptyCourt() {
     const i = st.courts.findIndex((c) => !c.cur);
     if (i >= 0 && st.courts.length > 1) st.courts.splice(i, 1);
-    autofill();
+    refill();
   }
 
   // ================= RENDER =================
@@ -541,7 +621,11 @@ export default function HostApp({ user }) {
         </div>
 
         <div className="label">Game method</div>
-        <Seg opts={[["requeue", "Re-queue all"], ["winners", "Winners stay"]]} val={se.method} onPick={(v) => act(() => { se.method = v; })} />
+        {se.method === "ladder" ? (
+          <div className="pill" style={{ background: "#FBF3E2", color: "#7A5A12", display: "inline-block" }}>👑 King of the Court</div>
+        ) : (
+          <Seg opts={[["requeue", "Re-queue all"], ["winners", "Winners stay"]]} val={se.method} onPick={(v) => act(() => { se.method = v; })} />
+        )}
 
         <div className="label">Courts</div>
         <div className="list">
@@ -572,12 +656,15 @@ export default function HostApp({ user }) {
     if (st.session.status === "created") return <div className="dashed" style={{ textAlign: "center" }}>Session created. Press <b>Start session</b> on the Session tab to generate matches.</div>;
     if (st.ui.swap) return renderSwap();
 
+    const ladder = st.session.method === "ladder";
+    const N = st.courts.length;
     const activeCount = st.players.filter((p) => p.status !== "rest").length;
     const openCount = st.courts.filter((c) => !c.cur).length;
-    const windingDown = st.session.status === "started" && openCount > 0 && (waiting().length < 4 || activeCount < st.courts.length * 4);
+    const windingDown = !ladder && st.session.status === "started" && openCount > 0 && (waiting().length < 4 || activeCount < st.courts.length * 4);
+    const rankTag = (i) => (i === 0 ? "👑 #1" : i === N - 1 ? "#" + N : "#" + (i + 1));
 
     const order = st.courts.map((ct, i) => ({ ct, i }));
-    order.sort((a, b) => {
+    if (!ladder) order.sort((a, b) => {
       const ca = a.ct.cur, cb = b.ct.cur;
       if (ca && cb) return ca.start - cb.start;
       if (ca) return -1;
@@ -587,10 +674,11 @@ export default function HostApp({ user }) {
 
     const cards = order.map(({ ct, i }) => {
       if (!ct.cur) {
+        const holdN = (ct.hold || []).length;
         return (
           <div className="dashed" key={i}>
-            <b className="muted">{ct.name}</b>
-            <div style={{ textAlign: "center", fontSize: 13, marginTop: 6 }} className="muted">Open — needs 4 compatible players</div>
+            <b className="muted">{ladder ? rankTag(i) + " " : ""}{ct.name}</b>
+            <div style={{ textAlign: "center", fontSize: 13, marginTop: 6 }} className="muted">{ladder ? `Waiting — ${holdN}/4 here · winners climb up, losers drop down` : "Open — needs 4 compatible players"}</div>
             {standbyBlock(ct.standby)}
           </div>
         );
@@ -599,7 +687,7 @@ export default function HostApp({ user }) {
       return (
         <div className="card" key={i}>
           <div className="court-head">
-            <span className="name">{ct.name}</span>
+            <span className="name">{ladder ? rankTag(i) + " " : ""}{ct.name}</span>
             <span className="right">
               <span className="timer">{clk(Date.now() - g.start)}</span>
               <span className="type-badge" style={{ background: tb.bg, color: tb.tx }}>{tb.t}</span>
@@ -611,11 +699,14 @@ export default function HostApp({ user }) {
           <div className="team">{g.teams[1].map((p, k) => <Chip key={p.id} p={p} onTap={() => act(() => { st.ui.swap = { court: i, side: 1, idx: k }; })} />)}</div>
           <div className="hint" style={{ marginTop: 6 }}>tap a name to swap</div>
           {standbyBlock(ct.standby)}
-          {st.session.method === "winners" ? (
-            <div className="btn-row" style={{ marginTop: 10 }}>
-              <button className="btn" onClick={() => act(() => winners(i, 0))}>🏆 Top won</button>
-              <button className="btn" onClick={() => act(() => winners(i, 1))}>🏆 Bottom won</button>
-            </div>
+          {st.session.method === "winners" || st.session.method === "ladder" ? (
+            <>
+              <div className="hint" style={{ marginTop: 10, textAlign: "center" }}>Tap the winning team</div>
+              <div className="btn-row" style={{ marginTop: 6 }}>
+                <button className="btn" onClick={() => act(() => winSelect(i, 0))}>🏆 {g.teams[0].map((p) => p.name).join(" & ")}</button>
+                <button className="btn" onClick={() => act(() => winSelect(i, 1))}>🏆 {g.teams[1].map((p) => p.name).join(" & ")}</button>
+              </div>
+            </>
           ) : (
             <button className="btn btn-full" style={{ marginTop: 10 }} onClick={() => act(() => gameDone(i))}>✓ Game done</button>
           )}
@@ -758,11 +849,11 @@ export default function HostApp({ user }) {
             <Seg
               opts={[[1, "Beg"], [2, "·"], [3, "Int"], [4, "·"], [5, "Adv"]]}
               val={p.level}
-              onPick={(v) => act(() => { p.level = v; upsertRoster({ name: p.name, gender: p.gender, level: p.level, freq: p.freq }); if (st.session.status === "started") autofill(); })}
+              onPick={(v) => act(() => { p.level = v; upsertRoster({ name: p.name, gender: p.gender, level: p.level, freq: p.freq }); if (st.session.status === "started") refill(); })}
               styleFor={(v) => ({ flex: v === 1 || v === 3 || v === 5 ? 2 : 1 })}
             />
             <div className="label">Must play format</div>
-            <Seg opts={FREQ} val={p.freq} onPick={(v) => act(() => { if (p.stackId) unstack(p.id); p.freq = v; upsertRoster({ name: p.name, gender: p.gender, level: p.level, freq: p.freq }); if (st.session.status === "started") autofill(); })} />
+            <Seg opts={FREQ} val={p.freq} onPick={(v) => act(() => { if (p.stackId) unstack(p.id); p.freq = v; upsertRoster({ name: p.name, gender: p.gender, level: p.level, freq: p.freq }); if (st.session.status === "started") refill(); })} />
             <div className="label">Stacking</div>
             {p.stackId ? (
               <button className="btn btn-full" onClick={() => act(() => unstack(p.id))}>Unstack partner</button>
@@ -777,12 +868,12 @@ export default function HostApp({ user }) {
             )}
             <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
               {p.status !== "play" && (
-                <button className="btn" style={{ flex: 1 }} onClick={() => act(() => { p.status = p.status === "rest" ? "wait" : "rest"; if (p.status === "wait") p.qt = Date.now(); if (st.session.status === "started") autofill(); })}>
+                <button className="btn" style={{ flex: 1 }} onClick={() => act(() => { p.status = p.status === "rest" ? "wait" : "rest"; if (p.status === "wait") p.qt = Date.now(); if (st.session.status === "started") refill(); })}>
                   {p.status === "rest" ? "▶ Back" : "❚❚ Rest"}
                 </button>
               )}
               {p.status !== "play" ? (
-                <button className="btn btn-danger" style={{ flex: "0 0 auto" }} onClick={() => act(() => { st.players = st.players.filter((q) => q.id !== p.id); st.ui.editId = null; if (st.session.status === "started") autofill(); })}>🗑</button>
+                <button className="btn btn-danger" style={{ flex: "0 0 auto" }} onClick={() => act(() => { st.players = st.players.filter((q) => q.id !== p.id); st.ui.editId = null; if (st.session.status === "started") refill(); })}>🗑</button>
               ) : (
                 <span className="hint">finish game to edit status</span>
               )}

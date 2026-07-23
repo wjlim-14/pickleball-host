@@ -707,6 +707,7 @@ export default function HostApp({ user }) {
             <span className="muted grow">Credits</span>
             <span>Unlimited (beta)</span>
           </div>
+          <a className="btn btn-full" href="/stats" style={{ marginTop: 8 }}>Your club stats</a>
           {user.isAdmin && (
             <a className="btn btn-full" href="/admin" style={{ marginTop: 8 }}>Admin — manage beta codes</a>
           )}

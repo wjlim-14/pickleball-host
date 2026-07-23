@@ -12,6 +12,8 @@ export default async function Admin() {
   if (!user) redirect("/login");
   if ((user.email || "").toLowerCase() !== ADMIN_EMAIL.toLowerCase()) redirect("/");
 
+  const { data: stats } = await supabase.rpc("admin_stats");
+
   const { data: profiles } = await supabase
     .from("profiles")
     .select("id, email, full_name, club_name, meets_per_week, participants_range, location, activated, created_at")
@@ -24,5 +26,5 @@ export default async function Admin() {
     .order("created_at", { ascending: false })
     .limit(500);
 
-  return <AdminClient profiles={profiles || []} codes={codes || []} />;
+  return <AdminClient stats={stats || {}} profiles={profiles || []} codes={codes || []} />;
 }

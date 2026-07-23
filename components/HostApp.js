@@ -90,6 +90,8 @@ export default function HostApp({ user }) {
     session: { status: "none", dbId: null, name: "", date: "", time: "", location: "", method: "requeue", start: null },
     ui: { tab: "session", editId: null, swap: null, ending: false, exportText: null, idleFlag: 300, sound: true, editRoster: false },
     roster: [],
+    history: {},
+    round: 0,
     id: 1,
     sid: 1,
   });
@@ -110,7 +112,7 @@ export default function HostApp({ user }) {
       cur: ct.cur ? { type: ct.cur.type, start: ct.cur.start, teams: ct.cur.teams.map((t) => t.map((p) => p.id)) } : null,
       standby: ct.standby ? { type: ct.standby.type, teams: ct.standby.teams.map((t) => t.map((p) => p.id)) } : null,
     }));
-    return { players: st.players, courts, log: st.log, session: st.session, id: st.id, sid: st.sid, prefs: { idleFlag: st.ui.idleFlag, sound: st.ui.sound } };
+    return { players: st.players, courts, log: st.log, session: st.session, id: st.id, sid: st.sid, history: st.history, round: st.round, prefs: { idleFlag: st.ui.idleFlag, sound: st.ui.sound } };
   }
   function hydrate(d) {
     const map = {};
@@ -127,6 +129,8 @@ export default function HostApp({ user }) {
     st.session = d.session || st.session;
     st.id = d.id || st.id;
     st.sid = d.sid || st.sid;
+    st.history = d.history || {};
+    st.round = d.round || 0;
     if (d.prefs) { st.ui.idleFlag = d.prefs.idleFlag ?? 300; st.ui.sound = d.prefs.sound ?? true; }
     st.ui.tab = st.session.status === "started" ? "match" : st.session.status === "created" ? "players" : "session";
   }
@@ -295,7 +299,7 @@ export default function HostApp({ user }) {
     if (st.session.status !== "started") return;
     for (const ct of st.courts) {
       if (!ct.cur) {
-        const r = pickFour(waiting());
+        const r = pickFour(waiting(), st.history, st.round);
         if (r) {
           r.four.forEach((p) => (p.status = "play"));
           ct.cur = { teams: r.teams, type: r.type, start: Date.now() };
@@ -307,7 +311,7 @@ export default function HostApp({ user }) {
   function computeStandby() {
     let virt = waiting().slice();
     for (const ct of st.courts) {
-      const r = pickFour(virt);
+      const r = pickFour(virt, st.history, st.round);
       if (r) {
         ct.standby = { teams: r.teams, type: r.type };
         virt = virt.filter((p) => r.four.indexOf(p) < 0);
@@ -327,10 +331,22 @@ export default function HostApp({ user }) {
     });
     insertGameDb(ct, g, winnerSide);
   }
+  function recordHistory(g) {
+    const mark = (a, b, kind) => {
+      const k = Math.min(a.id, b.id) + "-" + Math.max(a.id, b.id);
+      const h = st.history[k] || (st.history[k] = {});
+      h[kind] = st.round;
+    };
+    mark(g.teams[0][0], g.teams[0][1], "p");
+    mark(g.teams[1][0], g.teams[1][1], "p");
+    g.teams[0].forEach((x) => g.teams[1].forEach((y) => mark(x, y, "o")));
+    st.round++;
+  }
   function gameDone(i) {
     const ct = st.courts[i], g = ct.cur;
     if (!g) return;
     logGame(ct, g, null);
+    recordHistory(g);
     g.teams[0].concat(g.teams[1]).forEach((p) => { p.status = "wait"; p.qt = Date.now(); p.games++; });
     ct.cur = null;
     autofill();
@@ -339,6 +355,7 @@ export default function HostApp({ user }) {
     const ct = st.courts[i], g = ct.cur;
     if (!g) return;
     logGame(ct, g, side);
+    recordHistory(g);
     const win = g.teams[side], lose = g.teams[1 - side];
     lose.forEach((p) => { p.status = "wait"; p.qt = Date.now(); p.games++; });
     win.forEach((p) => p.games++);
@@ -418,6 +435,11 @@ export default function HostApp({ user }) {
     const ct = st.courts[i];
     if (ct.cur) ct.cur.teams[0].concat(ct.cur.teams[1]).forEach((p) => { p.status = "wait"; p.qt = Date.now(); });
     st.courts.splice(i, 1); autofill();
+  }
+  function removeEmptyCourt() {
+    const i = st.courts.findIndex((c) => !c.cur);
+    if (i >= 0 && st.courts.length > 1) st.courts.splice(i, 1);
+    autofill();
   }
 
   // ================= RENDER =================
@@ -544,6 +566,10 @@ export default function HostApp({ user }) {
     if (st.session.status === "created") return <div className="dashed" style={{ textAlign: "center" }}>Session created. Press <b>Start session</b> on the Session tab to generate matches.</div>;
     if (st.ui.swap) return renderSwap();
 
+    const activeCount = st.players.filter((p) => p.status !== "rest").length;
+    const openCount = st.courts.filter((c) => !c.cur).length;
+    const windingDown = st.session.status === "started" && openCount > 0 && (waiting().length < 4 || activeCount < st.courts.length * 4);
+
     const order = st.courts.map((ct, i) => ({ ct, i }));
     order.sort((a, b) => {
       const ca = a.ct.cur, cb = b.ct.cur;
@@ -553,7 +579,7 @@ export default function HostApp({ user }) {
       return a.i - b.i;
     });
 
-    return order.map(({ ct, i }) => {
+    const cards = order.map(({ ct, i }) => {
       if (!ct.cur) {
         return (
           <div className="dashed" key={i}>
@@ -590,6 +616,17 @@ export default function HostApp({ user }) {
         </div>
       );
     });
+    return (
+      <>
+        {windingDown && (
+          <div className="card" style={{ background: "var(--surface-1)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13 }}>⏳ Winding down — {waiting().length} waiting. Fewer courts keeps everyone playing.</span>
+            {st.courts.length > 1 && <button className="btn" style={{ flex: "0 0 auto" }} onClick={() => act(removeEmptyCourt)}>Remove a court</button>}
+          </div>
+        )}
+        {cards}
+      </>
+    );
   }
   function standbyBlock(g) {
     if (!g) return <div className="standby"><div className="hint">Standby — not enough waiting yet</div></div>;

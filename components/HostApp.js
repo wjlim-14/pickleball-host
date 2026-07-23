@@ -503,15 +503,18 @@ export default function HostApp({ user }) {
       );
     }
     if (st.ui.ending) {
+      const isAdmin = !!user.isAdmin;
       return (
         <div style={{ textAlign: "center", padding: "1rem 0" }}>
           <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>End this session?</div>
           <div className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
-            {st.log.length} games recorded. Export the data before ending?
+            {st.log.length} games recorded.{isAdmin ? " Export the data before ending?" : " All data is saved automatically — view it any time under Settings › Your club stats."}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => act(() => { const csv = buildCSV(); finalizeSession(); resetSession(); st.ui.exportText = csv; })}>Export data and end</button>
-            <button className="btn" onClick={() => act(() => { finalizeSession(); resetSession(); })}>End without export</button>
+            {isAdmin && (
+              <button className="btn btn-primary" onClick={() => act(() => { const csv = buildCSV(); finalizeSession(); resetSession(); st.ui.exportText = csv; })}>Export data and end</button>
+            )}
+            <button className={"btn" + (isAdmin ? "" : " btn-primary")} onClick={() => act(() => { finalizeSession(); resetSession(); })}>{isAdmin ? "End without export" : "End session"}</button>
             <button className="btn" onClick={() => act(() => { st.ui.ending = false; })}>Cancel</button>
           </div>
         </div>

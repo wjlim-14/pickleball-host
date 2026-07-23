@@ -170,7 +170,7 @@ export default function HostApp({ user }) {
     if (!sb.current || !st.session.dbId) return;
     const team = (t) => t.map((p) => ({ name: p.name, level: p.level, gender: p.gender }));
     try {
-      void sb.current.from("games").insert({
+      sb.current.from("games").insert({
         session_id: st.session.dbId,
         host_id: user.id,
         court: ct.name,
@@ -179,21 +179,21 @@ export default function HostApp({ user }) {
         team2: team(g.teams[1]),
         winner: winnerSide == null ? null : g.teams[winnerSide].map((p) => p.name).join(" & "),
         duration_seconds: Math.round((Date.now() - g.start) / 1000),
-      });
+      }).then(() => {}, () => {});
     } catch (e) {}
   }
   function finalizeSession() {
     if (!sb.current || !st.session.dbId) return;
     const sid = st.session.dbId;
     try {
-      void sb.current.from("sessions").update({
+      sb.current.from("sessions").update({
         status: "ended", ended_at: new Date().toISOString(),
         state: serializeState(), games_count: st.log.length, players_count: st.players.length,
-      }).eq("id", sid);
+      }).eq("id", sid).then(() => {}, () => {});
       if (st.players.length) {
-        void sb.current.from("session_players").insert(st.players.map((p) => ({
+        sb.current.from("session_players").insert(st.players.map((p) => ({
           session_id: sid, host_id: user.id, name: p.name, gender: p.gender, level: p.level, format_req: p.freq, games_played: p.games,
-        })));
+        }))).then(() => {}, () => {});
       }
     } catch (e) {}
   }
@@ -263,7 +263,7 @@ export default function HostApp({ user }) {
     const existing = st.roster.find((r) => r.name.toLowerCase() === nm.toLowerCase());
     if (existing) {
       existing.gender = gender; existing.level = level; existing.freq = freq || "any";
-      try { void sb.current.from("club_players").update({ gender, level, format_req: freq || "any", updated_at: new Date().toISOString() }).eq("id", existing.id); } catch (e) {}
+      try { sb.current.from("club_players").update({ gender, level, format_req: freq || "any", updated_at: new Date().toISOString() }).eq("id", existing.id).then(() => {}, () => {}); } catch (e) {}
     } else {
       const entry = { id: "tmp-" + Date.now(), name: nm, gender, level, freq: freq || "any" };
       st.roster.push(entry);
@@ -274,7 +274,7 @@ export default function HostApp({ user }) {
   }
   function removeFromRoster(id) {
     st.roster = st.roster.filter((r) => r.id !== id);
-    try { if (sb.current) void sb.current.from("club_players").delete().eq("id", id); } catch (e) {}
+    try { if (sb.current) sb.current.from("club_players").delete().eq("id", id).then(() => {}, () => {}); } catch (e) {}
   }
   function quickAddFromRoster(r) {
     addPlayer({ name: r.name, gender: r.gender, level: r.level, freq: r.freq });

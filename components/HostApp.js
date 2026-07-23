@@ -88,7 +88,8 @@ export default function HostApp({ user }) {
     courts: [],
     log: [],
     session: { status: "none", dbId: null, name: "", date: "", time: "", location: "", method: "requeue", start: null },
-    ui: { tab: "session", editId: null, swap: null, ending: false, exportText: null, idleFlag: 300, sound: true },
+    ui: { tab: "session", editId: null, swap: null, ending: false, exportText: null, idleFlag: 300, sound: true, editRoster: false },
+    roster: [],
     id: 1,
     sid: 1,
   });
@@ -221,6 +222,12 @@ export default function HostApp({ user }) {
           if (raw) hydrate(JSON.parse(raw));
         } catch (e) {}
       }
+      try {
+        if (sb.current) {
+          const { data } = await sb.current.from("club_players").select("id, name, gender, level, format_req").eq("host_id", user.id).order("name");
+          if (data) st.roster = data.map((r) => ({ id: r.id, name: r.name, gender: r.gender, level: r.level, freq: r.format_req || "any" }));
+        }
+      } catch (e) {}
       if (!cancelled) force();
     })();
     const t = setInterval(() => force(), 1000);
@@ -243,7 +250,30 @@ export default function HostApp({ user }) {
       status: "wait",
       stackId: null,
     });
+    upsertRoster({ name, gender, level, freq });
     if (st.session.status === "started") autofill();
+  }
+  function upsertRoster({ name, gender, level, freq }) {
+    const nm = (name || "").trim();
+    if (!nm || !sb.current) return;
+    const existing = st.roster.find((r) => r.name.toLowerCase() === nm.toLowerCase());
+    if (existing) {
+      existing.gender = gender; existing.level = level; existing.freq = freq || "any";
+      try { void sb.current.from("club_players").update({ gender, level, format_req: freq || "any", updated_at: new Date().toISOString() }).eq("id", existing.id); } catch (e) {}
+    } else {
+      const entry = { id: "tmp-" + Date.now(), name: nm, gender, level, freq: freq || "any" };
+      st.roster.push(entry);
+      try {
+        sb.current.from("club_players").insert({ host_id: user.id, name: nm, gender, level, format_req: freq || "any" }).select("id").single().then(({ data }) => { if (data) entry.id = data.id; });
+      } catch (e) {}
+    }
+  }
+  function removeFromRoster(id) {
+    st.roster = st.roster.filter((r) => r.id !== id);
+    try { if (sb.current) void sb.current.from("club_players").delete().eq("id", id); } catch (e) {}
+  }
+  function quickAddFromRoster(r) {
+    addPlayer({ name: r.name, gender: r.gender, level: r.level, freq: r.freq });
   }
   function stack(pId, mId) {
     const p = byId(pId), m = byId(mId);
@@ -621,9 +651,40 @@ export default function HostApp({ user }) {
     return (
       <div>
         <CheckInForm onAdd={(pl) => act(() => addPlayer(pl))} />
+        {st.roster.length > 0 && renderRoster()}
         <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Players ({st.players.length}) — waiting shown in FIFO order, tap to edit</div>
         <div className="list">
           {sorted.map((p) => renderPlayerRow(p, wq.indexOf(p)))}
+        </div>
+      </div>
+    );
+  }
+  function renderRoster() {
+    const inNames = new Set(st.players.map((p) => p.name.toLowerCase()));
+    const sorted = st.roster.slice().sort((a, b) => a.name.localeCompare(b.name));
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Your roster ({st.roster.length}) — tap to add</span>
+          <a onClick={() => act(() => { st.ui.editRoster = !st.ui.editRoster; })} style={{ cursor: "pointer", fontSize: 12 }}>{st.ui.editRoster ? "Done" : "Edit"}</a>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {sorted.map((r) => {
+            const added = inNames.has(r.name.toLowerCase());
+            const lc = LVCOL[mainLabel(r.level)];
+            const gc = r.gender === "M" ? MPILL : FPILL;
+            return (
+              <span key={r.id} className="chip"
+                onClick={() => { if (!st.ui.editRoster && !added) act(() => quickAddFromRoster(r)); }}
+                style={{ background: added ? "var(--surface-1)" : lc.bg, color: added ? "var(--text-muted)" : lc.tx, opacity: added ? 0.55 : 1, cursor: st.ui.editRoster || added ? "default" : "pointer" }}>
+                <span className="gpill" style={{ background: gc.bg, color: gc.tx }}>{r.gender}</span>
+                {r.name}
+                {st.ui.editRoster && (
+                  <span onClick={(e) => { e.stopPropagation(); act(() => removeFromRoster(r.id)); }} style={{ cursor: "pointer", marginLeft: 2, fontWeight: 600 }}>×</span>
+                )}
+              </span>
+            );
+          })}
         </div>
       </div>
     );
@@ -654,11 +715,11 @@ export default function HostApp({ user }) {
             <Seg
               opts={[[1, "Beg"], [2, "·"], [3, "Int"], [4, "·"], [5, "Adv"]]}
               val={p.level}
-              onPick={(v) => act(() => { p.level = v; if (st.session.status === "started") autofill(); })}
+              onPick={(v) => act(() => { p.level = v; upsertRoster({ name: p.name, gender: p.gender, level: p.level, freq: p.freq }); if (st.session.status === "started") autofill(); })}
               styleFor={(v) => ({ flex: v === 1 || v === 3 || v === 5 ? 2 : 1 })}
             />
             <div className="label">Must play format</div>
-            <Seg opts={FREQ} val={p.freq} onPick={(v) => act(() => { if (p.stackId) unstack(p.id); p.freq = v; if (st.session.status === "started") autofill(); })} />
+            <Seg opts={FREQ} val={p.freq} onPick={(v) => act(() => { if (p.stackId) unstack(p.id); p.freq = v; upsertRoster({ name: p.name, gender: p.gender, level: p.level, freq: p.freq }); if (st.session.status === "started") autofill(); })} />
             <div className="label">Stacking</div>
             {p.stackId ? (
               <button className="btn btn-full" onClick={() => act(() => unstack(p.id))}>Unstack partner</button>

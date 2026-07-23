@@ -392,6 +392,7 @@ export default function HostApp({ user }) {
     st.session = { status: "created", dbId, name: cfg.name, date: cfg.date, time: cfg.time, location: cfg.location, method: cfg.method, start: null };
     st.courts = cfg.courts.map((name) => ({ name, cur: null, standby: null }));
     st.players = []; st.log = []; st.id = 1; st.sid = 1;
+    st.history = {}; st.round = 0;
     st.ui.tab = "players";
     void upsertSession();
   }
@@ -405,6 +406,7 @@ export default function HostApp({ user }) {
   function resetSession() {
     st.session = { status: "none", dbId: null, name: "", date: "", time: "", location: "", method: "requeue", start: null };
     st.courts = []; st.players = []; st.log = [];
+    st.history = {}; st.round = 0;
     st.ui.exportText = null; st.ui.ending = false; st.ui.tab = "session";
   }
   function buildCSV() {
@@ -508,7 +510,7 @@ export default function HostApp({ user }) {
             {st.log.length} games recorded. Export the data before ending?
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => act(() => { finalizeSession(); st.ui.exportText = buildCSV(); st.ui.ending = false; })}>Export data and end</button>
+            <button className="btn btn-primary" onClick={() => act(() => { const csv = buildCSV(); finalizeSession(); resetSession(); st.ui.exportText = csv; })}>Export data and end</button>
             <button className="btn" onClick={() => act(() => { finalizeSession(); resetSession(); })}>End without export</button>
             <button className="btn" onClick={() => act(() => { st.ui.ending = false; })}>Cancel</button>
           </div>
@@ -541,7 +543,7 @@ export default function HostApp({ user }) {
         <div className="list">
           {st.courts.map((ct, i) => (
             <div key={i} style={{ display: "flex", gap: 6 }}>
-              <input defaultValue={ct.name} onChange={(e) => { ct.name = e.target.value.trim() || ct.name; }} />
+              <input defaultValue={ct.name} onChange={(e) => { ct.name = e.target.value.trim() || ct.name; }} onBlur={() => act(() => {})} />
               <button className="btn" style={{ flex: "0 0 auto" }} onClick={() => act(() => removeCourt(i))} aria-label="Remove court">✕</button>
             </div>
           ))}

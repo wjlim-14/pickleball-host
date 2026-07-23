@@ -1,28 +1,31 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
 export default function Login() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const send = async () => {
-    if (!email.trim()) return;
-    setBusy(true);
+  const login = async () => {
     setErr("");
+    setBusy(true);
     const supabase = createClient();
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
-      options: {
-        emailRedirectTo: `${location.origin}/auth/callback`,
-        shouldCreateUser: true,
-      },
+      password: pw,
     });
     setBusy(false);
-    if (error) setErr(error.message);
-    else setSent(true);
+    if (error) {
+      setErr("Wrong email or password. New here? Create an account below.");
+      return;
+    }
+    router.replace("/");
+    router.refresh();
   };
 
   return (
@@ -33,37 +36,29 @@ export default function Login() {
           QuickQueue
         </div>
         <p className="auth-sub">Host console — private beta</p>
-
-        {sent ? (
-          <>
-            <p className="auth-note">
-              Check your email — we sent a sign-in link to <b>{email}</b>. Open it on
-              this device to continue.
-            </p>
-            <button className="btn btn-lg" onClick={() => setSent(false)}>
-              Use a different email
-            </button>
-          </>
-        ) : (
-          <>
-            <input
-              type="email"
-              placeholder="you@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && send()}
-              autoFocus
-              style={{ marginBottom: 10, textAlign: "center" }}
-            />
-            <button className="btn btn-primary btn-lg" onClick={send} disabled={busy}>
-              {busy ? "Sending…" : "Email me a sign-in link"}
-            </button>
-            {err && (
-              <p className="auth-note" style={{ color: "var(--danger)" }}>{err}</p>
-            )}
-          </>
-        )}
-        <p className="auth-note">Access is limited to invited club hosts.</p>
+        <input
+          type="email"
+          placeholder="you@email.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoFocus
+          style={{ marginBottom: 8 }}
+        />
+        <input
+          type="password"
+          placeholder="Password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && login()}
+          style={{ marginBottom: 10 }}
+        />
+        <button className="btn btn-primary btn-lg" onClick={login} disabled={busy}>
+          {busy ? "Logging in…" : "Log in"}
+        </button>
+        {err && <p className="auth-note" style={{ color: "var(--danger)" }}>{err}</p>}
+        <p className="auth-note">
+          New here? <Link href="/register">Create an account</Link>
+        </p>
       </div>
     </main>
   );

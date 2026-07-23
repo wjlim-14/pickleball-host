@@ -12,17 +12,17 @@ export default async function Admin() {
   if (!user) redirect("/login");
   if ((user.email || "").toLowerCase() !== ADMIN_EMAIL.toLowerCase()) redirect("/");
 
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("id, email, full_name, club_name, meets_per_week, participants_range, location, activated, created_at")
+    .order("created_at", { ascending: false })
+    .limit(200);
+
   const { data: codes } = await supabase
     .from("beta_codes")
-    .select("code, note, redeemed_by, redeemed_at, created_at")
+    .select("code, assigned_to, redeemed_by, note, created_at")
     .order("created_at", { ascending: false })
-    .limit(100);
+    .limit(500);
 
-  const { data: requests } = await supabase
-    .from("beta_requests")
-    .select("id, name, email, club, location, message, status, created_at")
-    .order("created_at", { ascending: false })
-    .limit(100);
-
-  return <AdminClient initialCodes={codes || []} initialRequests={requests || []} />;
+  return <AdminClient profiles={profiles || []} codes={codes || []} />;
 }

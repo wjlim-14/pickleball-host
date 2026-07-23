@@ -22,6 +22,7 @@ const TB = {
   mens: { t: "Men's", bg: "#E6F1FB", tx: "#0C447C" },
   womens: { t: "Women's", bg: "#FBEAF0", tx: "#72243E" },
   mixed: { t: "Mixed", bg: "#EEEDFE", tx: "#3C3489" },
+  open: { t: "Open", bg: "#EAF3EC", tx: "#1F5130" },
 };
 const FREQ = [
   ["any", "Any"],

@@ -65,6 +65,7 @@ export default function CreateSessionForm({ onCreate }) {
         {[
           ["requeue", "Re-queue all"],
           ["winners", "Winners stay"],
+          ["ladder", "King of Court"],
         ].map((o) => (
           <button
             key={o[0]}
@@ -76,7 +77,9 @@ export default function CreateSessionForm({ onCreate }) {
         ))}
       </div>
       <div className="hint" style={{ marginTop: 5 }}>
-        Winners stay keeps the winning pair on and pulls 2 challengers (ladder mode).
+        {method === "requeue" && "Everyone re-queues to the back after each game."}
+        {method === "winners" && "Winning pair stays on; 2 challengers rotate in."}
+        {method === "ladder" && "Tap the winners each game — they climb a court, losers drop. Courts seed by skill."}
       </div>
 
       <div className="label">Courts</div>

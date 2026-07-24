@@ -91,7 +91,7 @@ export default function HostApp({ user }) {
     courts: [],
     log: [],
     session: { status: "none", dbId: null, name: "", date: "", time: "", location: "", method: "requeue", start: null },
-    ui: { tab: "session", editId: null, swap: null, ending: false, exportText: null, idleFlag: 300, sound: true, editRoster: false },
+    ui: { tab: "session", editId: null, swap: null, swapConfirm: null, winPick: null, ending: false, exportText: null, idleFlag: 300, sound: true, editRoster: false },
     roster: [],
     history: {},
     round: 0,
@@ -171,7 +171,7 @@ export default function HostApp({ user }) {
     if (syncRef.current) clearTimeout(syncRef.current);
     syncRef.current = setTimeout(() => { void upsertSession(); }, 1500);
   }
-  function insertGameDb(ct, g, winnerSide) {
+  function insertGameDb(ct, g, winPlayers) {
     if (!sb.current || !st.session.dbId) return;
     const team = (t) => t.map((p) => ({ name: p.name, level: p.level, gender: p.gender }));
     try {
@@ -182,7 +182,7 @@ export default function HostApp({ user }) {
         format: TB[g.type].t,
         team1: team(g.teams[0]),
         team2: team(g.teams[1]),
-        winner: winnerSide == null ? null : g.teams[winnerSide].map((p) => p.name).join(" & "),
+        winner: winPlayers && winPlayers.length ? winPlayers.map((p) => p.name).join(" & ") : null,
         duration_seconds: Math.round((Date.now() - g.start) / 1000),
       }).then(() => {}, () => {});
     } catch (e) {}
@@ -374,16 +374,18 @@ export default function HostApp({ user }) {
     if (idx < pool.length) st.courts[N - 1].hold = st.courts[N - 1].hold.concat(pool.slice(idx));
     fillLadder();
   }
-  function ladderResolve(i, side) {
+  function ladderResolve(i, winnerIds) {
     const ct = st.courts[i], g = ct.cur;
     if (!g) return;
-    logGame(ct, g, side);
+    const all = g.teams[0].concat(g.teams[1]);
+    const win = all.filter((p) => winnerIds.includes(p.id));
+    const lose = all.filter((p) => !winnerIds.includes(p.id));
+    logGame(ct, g, win);
     recordHistory(g);
     const N = st.courts.length;
-    const win = g.teams[side], lose = g.teams[1 - side];
     const up = Math.max(0, i - 1), down = Math.min(N - 1, i + 1);
     ct.cur = null;
-    win.concat(lose).forEach((p) => { p.status = "wait"; p.qt = Date.now(); p.games++; });
+    all.forEach((p) => { p.status = "wait"; p.qt = Date.now(); p.games++; });
     if (!st.courts[up].hold) st.courts[up].hold = [];
     if (!st.courts[down].hold) st.courts[down].hold = [];
     win.forEach((p) => st.courts[up].hold.push(p));
@@ -395,11 +397,11 @@ export default function HostApp({ user }) {
     if (st.session.method === "ladder") fillLadder();
     else autofill();
   }
-  function winSelect(i, side) {
-    if (st.session.method === "ladder") ladderResolve(i, side);
-    else winners(i, side);
+  function winSelect(i, winnerIds) {
+    if (st.session.method === "ladder") ladderResolve(i, winnerIds);
+    else winners(i, winnerIds);
   }
-  function logGame(ct, g, winnerSide) {
+  function logGame(ct, g, winPlayers) {
     if (st.session.status !== "started") return;
     st.log.push({
       t: new Date().toLocaleTimeString(),
@@ -407,10 +409,10 @@ export default function HostApp({ user }) {
       type: TB[g.type].t,
       team1: g.teams[0].map((p) => p.name).join(" & "),
       team2: g.teams[1].map((p) => p.name).join(" & "),
-      winner: winnerSide == null ? "" : g.teams[winnerSide].map((p) => p.name).join(" & "),
+      winner: winPlayers && winPlayers.length ? winPlayers.map((p) => p.name).join(" & ") : "",
       secs: Math.round((Date.now() - g.start) / 1000),
     });
-    insertGameDb(ct, g, winnerSide);
+    insertGameDb(ct, g, winPlayers);
   }
   function recordHistory(g) {
     const mark = (a, b, kind) => {
@@ -432,23 +434,25 @@ export default function HostApp({ user }) {
     ct.cur = null;
     autofill();
   }
-  function winners(i, side) {
+  function winners(i, winnerIds) {
     const ct = st.courts[i], g = ct.cur;
     if (!g) return;
-    logGame(ct, g, side);
+    const all = g.teams[0].concat(g.teams[1]);
+    const win = all.filter((p) => winnerIds.includes(p.id));
+    const lose = all.filter((p) => !winnerIds.includes(p.id));
+    logGame(ct, g, win);
     recordHistory(g);
-    const win = g.teams[side], lose = g.teams[1 - side];
     lose.forEach((p) => { p.status = "wait"; p.qt = Date.now(); p.games++; });
     win.forEach((p) => p.games++);
-    const ch = findChallengers(waiting(), g.type);
+    const ch = win.length === 2 ? findChallengers(waiting(), g.type) : null;
     if (ch) {
       ch.forEach((p) => (p.status = "play"));
-      ct.cur = { teams: [win, ch], type: g.type, start: Date.now() };
+      ct.cur = { teams: [win, ch], type: deriveType(win.concat(ch)), start: Date.now() };
     } else {
       win.forEach((p) => { p.status = "wait"; p.qt = Date.now(); });
       ct.cur = null;
     }
-    autofill();
+    refill();
   }
   function speakAnnounce(ct) {
     const g = ct.cur;
@@ -559,7 +563,7 @@ export default function HostApp({ user }) {
           <button
             key={t[0]}
             className={"tab" + (st.ui.tab === t[0] ? " on" : "")}
-            onClick={() => act(() => { st.ui.tab = t[0]; st.ui.editId = null; st.ui.swap = null; })}
+            onClick={() => act(() => { st.ui.tab = t[0]; st.ui.editId = null; st.ui.swap = null; st.ui.swapConfirm = null; st.ui.winPick = null; })}
           >
             <Icon name={t[0]} />
             <span>{t[1]}</span>
@@ -621,11 +625,8 @@ export default function HostApp({ user }) {
         </div>
 
         <div className="label">Game method</div>
-        {se.method === "ladder" ? (
-          <div className="pill" style={{ background: "#FBF3E2", color: "#7A5A12", display: "inline-block" }}>👑 King of the Court</div>
-        ) : (
-          <Seg opts={[["requeue", "Re-queue all"], ["winners", "Winners stay"]]} val={se.method} onPick={(v) => act(() => { se.method = v; })} />
-        )}
+        <Seg opts={[["requeue", "Re-queue"], ["winners", "Winners stay"], ["ladder", "King of Court"]]} val={se.method} onPick={(v) => act(() => { se.method = v; refill(); })} />
+        {se.status === "started" && <div className="hint" style={{ marginTop: 5 }}>Switch anytime — games in progress finish first.</div>}
 
         <div className="label">Courts</div>
         <div className="list">
@@ -655,6 +656,7 @@ export default function HostApp({ user }) {
     if (st.session.status === "none") return <div className="dashed" style={{ textAlign: "center" }}>Create a session first.</div>;
     if (st.session.status === "created") return <div className="dashed" style={{ textAlign: "center" }}>Session created. Press <b>Start session</b> on the Session tab to generate matches.</div>;
     if (st.ui.swap) return renderSwap();
+    if (st.ui.winPick) return renderWinPicker();
 
     const ladder = st.session.method === "ladder";
     const N = st.courts.length;
@@ -699,16 +701,10 @@ export default function HostApp({ user }) {
           <div className="team">{g.teams[1].map((p, k) => <Chip key={p.id} p={p} onTap={() => act(() => { st.ui.swap = { court: i, side: 1, idx: k }; })} />)}</div>
           <div className="hint" style={{ marginTop: 6 }}>tap a name to swap</div>
           {standbyBlock(ct.standby)}
-          {st.session.method === "winners" || st.session.method === "ladder" ? (
-            <>
-              <div className="hint" style={{ marginTop: 10, textAlign: "center" }}>Tap the winning team</div>
-              <div className="btn-row" style={{ marginTop: 6 }}>
-                <button className="btn" onClick={() => act(() => winSelect(i, 0))}>🏆 {g.teams[0].map((p) => p.name).join(" & ")}</button>
-                <button className="btn" onClick={() => act(() => winSelect(i, 1))}>🏆 {g.teams[1].map((p) => p.name).join(" & ")}</button>
-              </div>
-            </>
-          ) : (
+          {st.session.method === "requeue" ? (
             <button className="btn btn-full" style={{ marginTop: 10 }} onClick={() => act(() => gameDone(i))}>✓ Game done</button>
+          ) : (
+            <button className="btn btn-primary btn-full" style={{ marginTop: 10 }} onClick={() => act(() => { st.ui.winPick = { court: i, sel: [] }; })}>🏁 Game end — pick winners</button>
           )}
         </div>
       );
@@ -741,35 +737,117 @@ export default function HostApp({ user }) {
       </div>
     );
   }
+  function courtOfPlayer(pid) {
+    for (let ci = 0; ci < st.courts.length; ci++) {
+      const cc = st.courts[ci];
+      if (cc.cur && cc.cur.teams.some((t) => t.some((x) => x && x.id === pid))) return ci;
+    }
+    return -1;
+  }
   function renderSwap() {
     const sw = st.ui.swap, ct = st.courts[sw.court], g = ct.cur;
     const slot = g.teams[sw.side][sw.idx];
-    const cands = waiting().slice().sort((a, b) => a.qt - b.qt).filter((p) => p.gender === slot.gender && compat(p, g.type));
+    const onThis = new Set(g.teams[0].concat(g.teams[1]).map((p) => p.id));
+    const list = st.players.filter((p) => !onThis.has(p.id));
+    const ord = { wait: 0, play: 1, rest: 2 };
+    list.sort((a, b) => (ord[a.status] - ord[b.status]) || (a.qt - b.qt));
+    const statusOf = (p) => {
+      if (p.status === "rest") return "resting";
+      if (p.status === "play") { const ci = courtOfPlayer(p.id); return ci >= 0 ? st.courts[ci].name : "on court"; }
+      return "idle " + clk(Date.now() - p.qt);
+    };
     const doSwap = (inP) => act(() => {
       const out = ct.cur.teams[sw.side][sw.idx];
-      const oq = out.qt;
-      out.status = "wait"; out.qt = inP.qt;
-      inP.status = "play"; inP.qt = oq;
+      out.status = "wait"; out.qt = Date.now();
+      inP.status = "play";
       ct.cur.teams[sw.side][sw.idx] = inP;
-      st.ui.swap = null;
+      ct.cur.type = deriveType(ct.cur.teams[0].concat(ct.cur.teams[1]));
+      st.ui.swap = null; st.ui.swapConfirm = null;
       computeStandby();
     });
+    const doCross = (inP) => act(() => {
+      const out = ct.cur.teams[sw.side][sw.idx];
+      const sci = courtOfPlayer(inP.id);
+      let sT = -1, sK = -1;
+      if (sci >= 0) st.courts[sci].cur.teams.forEach((t, ti) => { const k = t.findIndex((x) => x && x.id === inP.id); if (k >= 0) { sT = ti; sK = k; } });
+      out.status = "wait"; out.qt = Date.now();
+      ct.cur.teams[sw.side][sw.idx] = inP;
+      if (sci >= 0 && sT >= 0) {
+        const filler = waiting().slice().sort((a, b) => a.qt - b.qt).find((p) => p.id !== out.id);
+        if (filler) { filler.status = "play"; st.courts[sci].cur.teams[sT][sK] = filler; }
+        else { out.status = "play"; st.courts[sci].cur.teams[sT][sK] = out; }
+        st.courts[sci].cur.type = deriveType(st.courts[sci].cur.teams[0].concat(st.courts[sci].cur.teams[1]));
+      }
+      ct.cur.type = deriveType(ct.cur.teams[0].concat(ct.cur.teams[1]));
+      st.ui.swap = null; st.ui.swapConfirm = null;
+      computeStandby();
+    });
+    if (st.ui.swapConfirm) {
+      const inP = byId(st.ui.swapConfirm);
+      const sci = inP ? courtOfPlayer(inP.id) : -1;
+      return (
+        <div style={{ textAlign: "center", padding: "1rem 0" }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Move {inP && inP.name} onto {ct.name}?</div>
+          <div className="muted" style={{ fontSize: 13, marginBottom: 16 }}>{inP && inP.name} is on {sci >= 0 ? st.courts[sci].name : "another court"}. That court's spot will fill from the queue next.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <button className="btn btn-primary" onClick={() => doCross(inP)}>Yes, move</button>
+            <button className="btn" onClick={() => act(() => { st.ui.swapConfirm = null; })}>No, keep as is</button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div>
         <button className="btn" style={{ marginBottom: 10 }} onClick={() => act(() => { st.ui.swap = null; })}>← Cancel</button>
         <div style={{ fontSize: 13, marginBottom: 8 }}>Swap out <b>{slot.name}</b> ({mainLabel(slot.level)}) on {ct.name} with:</div>
-        {cands.length ? (
+        {list.length ? (
           <div className="list">
-            {cands.map((p) => (
-              <div className="row" key={p.id} style={{ cursor: "pointer" }} onClick={() => doSwap(p)}>
-                <span className="gpill" style={{ background: (p.gender === "M" ? MPILL : FPILL).bg, color: (p.gender === "M" ? MPILL : FPILL).tx }}>{p.gender}</span>
+            {list.map((p) => {
+              const gc = p.gender === "M" ? MPILL : FPILL;
+              return (
+                <div className="row" key={p.id} style={{ cursor: "pointer" }} onClick={() => { if (p.status === "play") act(() => { st.ui.swapConfirm = p.id; }); else doSwap(p); }}>
+                  <span className="gpill" style={{ background: gc.bg, color: gc.tx }}>{p.gender}</span>
+                  <span className="grow">{p.name}</span>
+                  <span className="muted" style={{ fontSize: 12 }}>{mainLabel(p.level)}</span>
+                  <span className="hint" style={{ minWidth: 76, textAlign: "right" }}>{statusOf(p)}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : <div className="muted" style={{ fontSize: 13 }}>No other players checked in.</div>}
+      </div>
+    );
+  }
+  function renderWinPicker() {
+    const wp = st.ui.winPick, ct = st.courts[wp.court], g = ct.cur;
+    if (!g) return <div className="dashed" style={{ textAlign: "center" }}>Game already cleared.</div>;
+    const all = g.teams[0].concat(g.teams[1]);
+    const sel = wp.sel;
+    const toggle = (id) => act(() => {
+      const k = sel.indexOf(id);
+      if (k >= 0) sel.splice(k, 1);
+      else if (sel.length < 2) sel.push(id);
+    });
+    return (
+      <div>
+        <button className="btn" style={{ marginBottom: 10 }} onClick={() => act(() => { st.ui.winPick = null; })}>← Cancel</button>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{ct.name} — who won?</div>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>Tap the 2 winning players ({sel.length}/2). {st.session.method === "ladder" ? "They climb a court." : "They stay on court."}</div>
+        <div className="list">
+          {all.map((p) => {
+            const on = sel.includes(p.id);
+            const gc = p.gender === "M" ? MPILL : FPILL;
+            return (
+              <div className="row" key={p.id} style={{ cursor: "pointer", background: on ? "var(--surface-1)" : undefined, borderLeft: on ? "3px solid var(--accent)" : "3px solid transparent" }} onClick={() => toggle(p.id)}>
+                <span style={{ width: 22, textAlign: "center" }}>{on ? "🏆" : "○"}</span>
+                <span className="gpill" style={{ background: gc.bg, color: gc.tx }}>{p.gender}</span>
                 <span className="grow">{p.name}</span>
                 <span className="muted" style={{ fontSize: 12 }}>{mainLabel(p.level)}</span>
-                <span className="hint">idle {clk(Date.now() - p.qt)}</span>
               </div>
-            ))}
-          </div>
-        ) : <div className="muted" style={{ fontSize: 13 }}>No compatible waiting player to swap in.</div>}
+            );
+          })}
+        </div>
+        <button className="btn btn-primary btn-full" style={{ marginTop: 12 }} disabled={sel.length !== 2} onClick={() => act(() => { const w = sel.slice(); const c = wp.court; st.ui.winPick = null; winSelect(c, w); })}>Submit winners</button>
       </div>
     );
   }
